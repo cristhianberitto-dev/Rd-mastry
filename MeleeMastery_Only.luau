@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 local Enemies = workspace:WaitForChild("Enemies")
@@ -105,6 +106,11 @@ local lastQuestStart = 0
 local spawnIndex = 1
 local lastSpawnMove = 0
 local lastClick = 0
+local MoveToken = 0
+local FLIGHT_SPEED = 250 -- velocidade de deslocamento aereo, ajustavel
+local NoclipEnabled = false
+local OriginalCollision = setmetatable({}, {__mode = "k"})
+local SetNoclip
 
 local function Make(className, properties, parent)
     local object = Instance.new(className)
@@ -131,6 +137,67 @@ local Main = Make("Frame", {
 }, GUI)
 Make("UICorner", {CornerRadius = UDim.new(0, 10)}, Main)
 Make("UIStroke", {Color = Color3.fromRGB(75, 96, 130), Thickness = 1}, Main)
+local cameraAtStart = workspace.CurrentCamera
+local viewportAtStart = cameraAtStart and cameraAtStart.ViewportSize or Vector2.new(1280, 720)
+local responsiveScale = math.clamp(math.min(viewportAtStart.X / 430, viewportAtStart.Y / 340), 0.55, 0.62)
+Make("UIScale", {Scale = responsiveScale}, Main)
+
+-- Botao flutuante permanece visivel mesmo quando o painel estiver fechado.
+local FloatingButton = Make("TextButton", {
+    Name = "FloatingToggle",
+    Size = UDim2.fromOffset(48, 48),
+    Position = UDim2.new(1, -64, 0.22, 0),
+    BackgroundColor3 = Color3.fromRGB(20, 23, 31),
+    BorderSizePixel = 0,
+    Text = "−",
+    TextColor3 = Color3.fromRGB(115, 210, 255),
+    TextSize = 26,
+    Font = Enum.Font.GothamBold,
+    AutoButtonColor = true,
+    ZIndex = 30,
+    Active = true
+}, GUI)
+Make("UICorner", {CornerRadius = UDim.new(1, 0)}, FloatingButton)
+Make("UIStroke", {Color = Color3.fromRGB(75, 170, 225), Thickness = 2}, FloatingButton)
+
+local suppressFloatClick = false
+FloatingButton.Activated:Connect(function()
+    if suppressFloatClick then
+        suppressFloatClick = false
+        return
+    end
+    Main.Visible = not Main.Visible
+    FloatingButton.Text = Main.Visible and "−" or "MM"
+end)
+
+-- Permite arrastar o botao flutuante no celular.
+do
+    local floatDragging = false
+    local floatStart, floatPosition
+    FloatingButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            floatDragging = true
+            floatStart = input.Position
+            floatPosition = FloatingButton.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if floatDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - floatStart
+            if delta.Magnitude > 7 then suppressFloatClick = true end
+            FloatingButton.Position = UDim2.new(floatPosition.X.Scale, floatPosition.X.Offset + delta.X,
+                floatPosition.Y.Scale, floatPosition.Y.Offset + delta.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            floatDragging = false
+            if suppressFloatClick then
+                task.delay(0.25, function() suppressFloatClick = false end)
+            end
+        end
+    end)
+end
 
 local Header = Make("TextLabel", {
     Name = "Header",
@@ -198,6 +265,8 @@ local function SetSelectedSea(placeId)
     if Enabled then
         Enabled = false
         LoopToken += 1
+        MoveToken += 1
+        SetNoclip(false)
     end
     Config = Configs[placeId]
     for id, button in pairs(SeaButtons) do
@@ -326,6 +395,28 @@ local function GetCharacterParts()
     return character, humanoid, root
 end
 
+SetNoclip = function(enabled)
+    NoclipEnabled = enabled
+    local character = Player.Character
+    if not character then return end
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if enabled then
+                if OriginalCollision[part] == nil then
+                    OriginalCollision[part] = part.CanCollide
+                end
+                part.CanCollide = false
+            else
+                local original = OriginalCollision[part]
+                if original ~= nil then
+                    part.CanCollide = original
+                    OriginalCollision[part] = nil
+                end
+            end
+        end
+    end
+end
+
 local function IsTargetName(name)
     if not Config then return false end
     return table.find(Config.Enemies, name) ~= nil
@@ -375,12 +466,46 @@ local function HasCorrectQuest()
     return false
 end
 
+-- Move-se por segmentos no ar em vez de definir CFrame instantaneamente.
+-- A rota sobe primeiro, cruza ate o alvo em altitude segura e so entao desce.
+local function MoveSegment(destination, rotation, token)
+    while Enabled and token == MoveToken do
+        local _, _, root = GetCharacterParts()
+        if not root then return false end
+        local delta = destination - root.Position
+        local distance = delta.Magnitude
+        if distance <= 1.5 then
+            root.CFrame = CFrame.new(destination) * rotation
+            root.AssemblyLinearVelocity = Vector3.zero
+            return true
+        end
+        local dt = RunService.Heartbeat:Wait()
+        if not Enabled or token ~= MoveToken then return false end
+        local step = math.min(distance, FLIGHT_SPEED * math.max(dt, 1/240))
+        local nextPosition = root.Position + delta.Unit * step
+        root.CFrame = CFrame.new(nextPosition) * rotation
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+    return false
+end
+
 local function MoveTo(cf)
     local _, _, root = GetCharacterParts()
-    if not root then return end
-    if (root.Position - cf.Position).Magnitude > 7 then
-        root.CFrame = cf
-    end
+    if not root or not Enabled then return end
+    if (root.Position - cf.Position).Magnitude <= 7 then return end
+
+    MoveToken += 1
+    local token = MoveToken
+    local destination = cf.Position
+    local rotation = cf.Rotation
+    -- A margem evita atravessar ilhas/edificios na mesma altura do solo.
+    local cruiseY = math.max(root.Position.Y, destination.Y) + 45
+    local liftPoint = Vector3.new(root.Position.X, cruiseY, root.Position.Z)
+    local cruisePoint = Vector3.new(destination.X, cruiseY, destination.Z)
+
+    if not MoveSegment(liftPoint, rotation, token) then return end
+    if not MoveSegment(cruisePoint, rotation, token) then return end
+    MoveSegment(destination, rotation, token)
 end
 
 local function EquipMelee()
@@ -470,6 +595,8 @@ end
 local function FarmLoop(token)
     if not Config then
         Enabled = false
+        MoveToken += 1
+        SetNoclip(false)
         Toggle.Text = "Melee Mastery Farm: OFF"
         Toggle.BackgroundColor3 = Color3.fromRGB(42, 48, 61)
         Status.Text = "Escolha SEA 1, SEA 2 ou SEA 3 acima"
@@ -528,6 +655,7 @@ Toggle.Activated:Connect(function()
     Enabled = not Enabled
     if Enabled then
         LoopToken += 1
+        SetNoclip(true)
         local myToken = LoopToken
         Toggle.Text = "Melee Mastery Farm: ON"
         Toggle.BackgroundColor3 = Color3.fromRGB(26, 123, 91)
@@ -535,6 +663,8 @@ Toggle.Activated:Connect(function()
         task.spawn(FarmLoop, myToken)
     else
         LoopToken += 1
+        MoveToken += 1
+        SetNoclip(false)
         Toggle.Text = "Melee Mastery Farm: OFF"
         Toggle.BackgroundColor3 = Color3.fromRGB(42, 48, 61)
         Status.Text = Config.SeaName .. " | Farm pausado"
@@ -544,10 +674,13 @@ end)
 Player.CharacterAdded:Connect(function()
     task.wait(1)
     if Enabled then
+        SetNoclip(true)
         LoopToken += 1
         local myToken = LoopToken
         task.spawn(FarmLoop, myToken)
+    else
+        SetNoclip(false)
     end
 end)
 
-print("Melee Mastery Farm UI carregada. Somente uma opcao esta incluida.")
+print("Melee Mastery Farm UI carregada: painel compacto, botao flutuante, deslocamento aereo gradual e no-clip durante o farm.")
