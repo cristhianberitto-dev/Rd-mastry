@@ -51,7 +51,7 @@ local Configs = {
     },
     [7449423635] = {
         SeaName = "Sea 3",
-        Enemies = {"Isle Champion"},
+        Enemies = {"Isle Champion", "Sun-kissed Warrior"},
         QuestName = "TikiQuest2",
         QuestIndex = 2,
         QuestPosition = CFrame.new(-16540, 56, 1051),
@@ -62,7 +62,41 @@ local Configs = {
         }
     }
 }
-local Config = Configs[game.PlaceId]
+local function DetectConfig()
+    local placeId = tonumber(game.PlaceId)
+    if placeId and Configs[placeId] then
+        return Configs[placeId], "PlaceId " .. tostring(placeId)
+    end
+
+    -- Fallback for clients/executors where PlaceId is not being reported as expected.
+    local map = workspace:FindFirstChild("Map")
+    local cues = {
+        [7449423635] = {"TikiOutpost", "Tiki Outpost", "PortTown", "Port Town", "HydraIsland", "FloatingTurtle", "GreatTree", "HauntedCastle"},
+        [4442272183] = {"KingdomOfRose", "Kingdom of Rose", "GreenZone", "Green Zone", "CursedShip", "ForgottenIsland", "SnowMountain"},
+        [2753915549] = {"FountainCity", "Fountain City", "Jungle", "PirateVillage", "Pirate Village", "MarineStarter", "PirateStarter", "UnderwaterCity"}
+    }
+    if map then
+        for _, place in ipairs({7449423635, 4442272183, 2753915549}) do
+            for _, cue in ipairs(cues[place]) do
+                if map:FindFirstChild(cue, true) then
+                    return Configs[place], "map"
+                end
+            end
+        end
+    end
+
+    -- NPC-name fallback if the map hierarchy is different after an update.
+    for _, enemy in ipairs(Enemies:GetChildren()) do
+        for place, cfg in pairs(Configs) do
+            if table.find(cfg.Enemies, enemy.Name) then
+                return cfg, "NPC"
+            end
+        end
+    end
+    return nil, "PlaceId " .. tostring(game.PlaceId) .. " nao reconhecido"
+end
+
+local Config, DetectInfo = DetectConfig()
 
 local Enabled = false
 local Height = 35
@@ -89,8 +123,8 @@ local GUI = Make("ScreenGui", {
 
 local Main = Make("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(286, 190),
-    Position = UDim2.new(0.5, -143, 0.48, -95),
+    Size = UDim2.fromOffset(286, 205),
+    Position = UDim2.new(0.5, -143, 0.48, -102),
     BackgroundColor3 = Color3.fromRGB(20, 23, 31),
     BorderSizePixel = 0,
     Active = true
@@ -115,17 +149,41 @@ local Status = Make("TextLabel", {
     Size = UDim2.new(1, -24, 0, 22),
     Position = UDim2.fromOffset(12, 38),
     BackgroundTransparency = 1,
-    Text = Config and (Config.SeaName .. " detectado") or "Sea nao reconhecido",
-    TextColor3 = Config and Color3.fromRGB(170, 180, 195) or Color3.fromRGB(255, 120, 120),
-    TextSize = 11,
+    Text = Config and (Config.SeaName .. " detectado") or ("Selecione seu Sea | ID: " .. tostring(game.PlaceId)),
+    TextColor3 = Config and Color3.fromRGB(170, 180, 195) or Color3.fromRGB(255, 170, 100),
+    TextSize = 10,
     Font = Enum.Font.Gotham,
     TextXAlignment = Enum.TextXAlignment.Left
 }, Main)
 
-local Toggle = Make("TextButton", {
+local Toggle
+local SeaButtons = {}
+local SeaButtonData = {
+    {id = 2753915549, label = "SEA 1"},
+    {id = 4442272183, label = "SEA 2"},
+    {id = 7449423635, label = "SEA 3"}
+}
+for index, item in ipairs(SeaButtonData) do
+    local button = Make("TextButton", {
+        Name = item.label:gsub(" ", ""),
+        Size = UDim2.new(1/3, -14, 0, 22),
+        Position = UDim2.new((index - 1)/3, 12, 0, 60),
+        BackgroundColor3 = Config == Configs[item.id] and Color3.fromRGB(26, 123, 91) or Color3.fromRGB(42, 48, 61),
+        BorderSizePixel = 0,
+        Text = item.label,
+        TextColor3 = Color3.fromRGB(240, 244, 250),
+        TextSize = 10,
+        Font = Enum.Font.GothamBold,
+        AutoButtonColor = true
+    }, Main)
+    Make("UICorner", {CornerRadius = UDim.new(0, 6)}, button)
+    SeaButtons[item.id] = button
+end
+
+Toggle = Make("TextButton", {
     Name = "FarmToggle",
     Size = UDim2.new(1, -24, 0, 38),
-    Position = UDim2.fromOffset(12, 66),
+    Position = UDim2.fromOffset(12, 87),
     BackgroundColor3 = Color3.fromRGB(42, 48, 61),
     BorderSizePixel = 0,
     Text = "Melee Mastery Farm: OFF",
@@ -136,10 +194,33 @@ local Toggle = Make("TextButton", {
 }, Main)
 Make("UICorner", {CornerRadius = UDim.new(0, 7)}, Toggle)
 
+local function SetSelectedSea(placeId)
+    if Enabled then
+        Enabled = false
+        LoopToken += 1
+    end
+    Config = Configs[placeId]
+    for id, button in pairs(SeaButtons) do
+        button.BackgroundColor3 = id == placeId and Color3.fromRGB(26, 123, 91) or Color3.fromRGB(42, 48, 61)
+    end
+    if Config then
+        Status.Text = Config.SeaName .. " selecionado manualmente"
+        Status.TextColor3 = Color3.fromRGB(170, 220, 190)
+        Toggle.Text = "Melee Mastery Farm: OFF"
+        Toggle.BackgroundColor3 = Color3.fromRGB(42, 48, 61)
+    end
+end
+
+for placeId, button in pairs(SeaButtons) do
+    button.Activated:Connect(function()
+        SetSelectedSea(placeId)
+    end)
+end
+
 local HeightText = Make("TextLabel", {
     Name = "HeightLabel",
     Size = UDim2.new(1, -24, 0, 20),
-    Position = UDim2.fromOffset(12, 112),
+    Position = UDim2.fromOffset(12, 130),
     BackgroundTransparency = 1,
     Text = "Altura acima do NPC: " .. Height,
     TextColor3 = Color3.fromRGB(220, 226, 236),
@@ -151,7 +232,7 @@ local HeightText = Make("TextLabel", {
 local SliderBack = Make("Frame", {
     Name = "SliderBack",
     Size = UDim2.new(1, -24, 0, 10),
-    Position = UDim2.fromOffset(12, 140),
+    Position = UDim2.fromOffset(12, 155),
     BackgroundColor3 = Color3.fromRGB(48, 56, 72),
     BorderSizePixel = 0
 }, Main)
@@ -175,7 +256,7 @@ local SliderButton = Make("TextButton", {
 local Footer = Make("TextLabel", {
     Name = "Footer",
     Size = UDim2.new(1, -24, 0, 17),
-    Position = UDim2.fromOffset(12, 161),
+    Position = UDim2.fromOffset(12, 179),
     BackgroundTransparency = 1,
     Text = "Somente esta funcao esta incluida",
     TextColor3 = Color3.fromRGB(125, 137, 157),
@@ -327,22 +408,43 @@ local function EnableHaki()
 end
 
 local function ClickAttack()
-    if os.clock() - lastClick < 0.12 then return end
+    -- Keep normal attacks running while a living target is selected.
+    if os.clock() - lastClick < 0.085 then return end
     lastClick = os.clock()
-    pcall(function()
-        VirtualUser:CaptureController()
-        VirtualUser:Button1Down(Vector2.new(math.huge, math.huge))
-    end)
-    task.delay(0.08, function()
-        pcall(function() VirtualUser:Button1Up(Vector2.new(math.huge, math.huge)) end)
-    end)
+
+    local ok = false
+    if type(mouse1click) == "function" then
+        ok = pcall(mouse1click)
+    elseif type(mouse1press) == "function" and type(mouse1release) == "function" then
+        ok = pcall(mouse1press)
+        task.delay(0.035, function()
+            pcall(mouse1release)
+        end)
+    end
+
+    if not ok then
+        pcall(function()
+            VirtualUser:CaptureController()
+            local camera = workspace.CurrentCamera
+            local point = camera and (camera.ViewportSize / 2) or Vector2.new(0, 0)
+            VirtualUser:Button1Down(point, camera and camera.CFrame or CFrame.new())
+        end)
+        task.delay(0.04, function()
+            pcall(function()
+                local camera = workspace.CurrentCamera
+                local point = camera and (camera.ViewportSize / 2) or Vector2.new(0, 0)
+                VirtualUser:Button1Up(point, camera and camera.CFrame or CFrame.new())
+            end)
+        end)
+    end
 end
 
 local function EnlargeAndGroup(target)
     local targetRoot = target and (target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart)
     if not targetRoot then return end
+    local hitboxSize = math.clamp(Height * 1.7, 50, 220)
     pcall(function()
-        targetRoot.Size = Vector3.new(50, 50, 50)
+        targetRoot.Size = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
         targetRoot.CanCollide = false
     end)
     if type(sethiddenproperty) == "function" then
@@ -355,7 +457,7 @@ local function EnlargeAndGroup(target)
             if humanoid and humanoid.Health > 0 and root and (root.Position - targetRoot.Position).Magnitude < 350 then
                 pcall(function()
                     root.CFrame = targetRoot.CFrame
-                    root.Size = Vector3.new(50, 50, 50)
+                    root.Size = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
                     root.CanCollide = false
                     humanoid.WalkSpeed = 0
                     humanoid.JumpPower = 0
@@ -370,7 +472,7 @@ local function FarmLoop(token)
         Enabled = false
         Toggle.Text = "Melee Mastery Farm: OFF"
         Toggle.BackgroundColor3 = Color3.fromRGB(42, 48, 61)
-        Status.Text = "Sea nao reconhecido"
+        Status.Text = "Escolha SEA 1, SEA 2 ou SEA 3 acima"
         return
     end
 
@@ -419,7 +521,8 @@ end
 
 Toggle.Activated:Connect(function()
     if not Config then
-        Status.Text = "Entre no Sea 1, Sea 2 ou Sea 3"
+        Status.Text = "Toque em SEA 1, SEA 2 ou SEA 3 acima"
+        Status.TextColor3 = Color3.fromRGB(255, 170, 100)
         return
     end
     Enabled = not Enabled
